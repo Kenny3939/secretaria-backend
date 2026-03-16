@@ -1,23 +1,32 @@
 // src/utils/time.utils.ts
 
 /**
- * Convierte texto como "hoy", "mañana" o "15/03" en una fecha ISO
- * para buscar en la base de datos.
+ * Convierte texto como "hoy", "mañana" o "15/03" en una fecha ISO.
+ * Corrige el año si el mes ya pasó (ej: escribir "15/03" en diciembre apunta al año siguiente).
  */
 export function procesarFechaHora(fechaTexto: string, horaTexto: string): string {
   const ahora = new Date();
-  const fecha = new Date();
+  const ahoraGT = aHoraGuatemala(ahora);
+  const fecha = new Date(ahoraGT);
 
   if (fechaTexto.includes('hoy')) {
     // Se mantiene la fecha de hoy
   } else if (fechaTexto.includes('mañan')) {
-    fecha.setDate(ahora.getDate() + 1);
+    fecha.setDate(ahoraGT.getDate() + 1);
   } else {
     const partes = fechaTexto.split('/');
     if (partes.length >= 2) {
+      const dia = parseInt(partes[0]);
+      const mes = parseInt(partes[1]) - 1; // 0-indexed
+
       // ✅ FIX: setMonth ANTES de setDate para evitar saltos de mes
-      fecha.setMonth(parseInt(partes[1]) - 1);
-      fecha.setDate(parseInt(partes[0]));
+      fecha.setMonth(mes);
+      fecha.setDate(dia);
+
+      // ✅ FIX: si la fecha ya pasó este año, apuntar al año siguiente
+      if (fecha < ahoraGT) {
+        fecha.setFullYear(fecha.getFullYear() + 1);
+      }
     }
   }
 
@@ -31,7 +40,8 @@ export function procesarFechaHora(fechaTexto: string, horaTexto: string): string
  */
 export function convertirHoraAMinutos(horaStr: string): number {
   if (!horaStr) return 0;
-  const [h, m] = horaStr.split(':').map(Number);
+  const clean = horaStr.slice(0, 5); // acepta "08:30:00" o "08:30"
+  const [h, m] = clean.split(':').map(Number);
   return h * 60 + m;
 }
 
@@ -47,7 +57,7 @@ export function minutosAHora(totalMinutos: number): string {
 /**
  * Helper: convierte cualquier Date a su equivalente en zona Guatemala
  */
-function aHoraGuatemala(d: Date): Date {
+export function aHoraGuatemala(d: Date): Date {
   return new Date(d.toLocaleString("en-US", { timeZone: "America/Guatemala" }));
 }
 
@@ -70,8 +80,8 @@ export function verificarSlotBloqueado(
 
     // Rango de horas bloqueado
     if (bloqueo.start_time && bloqueo.end_time) {
-      const bloqInicio = convertirHoraAMinutos(bloqueo.start_time.slice(0, 5));
-      const bloqFin    = convertirHoraAMinutos(bloqueo.end_time.slice(0, 5));
+      const bloqInicio = convertirHoraAMinutos(bloqueo.start_time);
+      const bloqFin    = convertirHoraAMinutos(bloqueo.end_time);
       if (slotMinutos < bloqFin && slotFinMinutos > bloqInicio) return true;
     }
   }
@@ -80,7 +90,9 @@ export function verificarSlotBloqueado(
 
 /**
  * Generador de horarios con control de capacidad real.
- * Respeta días/horas bloqueados desde el panel admin.
+ * - Respeta días/horas bloqueados desde el panel admin
+ * - Usa buffer_minutes para el intervalo entre slots
+ * - Zona horaria Guatemala consistente en todo el cálculo
  */
 export function generarHorariosDisponibles(
   fechaISO: string,
@@ -89,30 +101,39 @@ export function generarHorariosDisponibles(
   horaFinNegocio: string,
   citasExistentes: any[],
   capacidadTotal: number = 1,
-  fechasBloqueadas: any[] = []
+  fechasBloqueadas: any[] = [],
+  bufferMinutos: number = 0
 ): string[] {
   const horariosDisponibles: string[] = [];
-  const fechaBase = new Date(fechaISO);
+
+  // ✅ FIX: usar Guatemala consistentemente para la fecha base
+  const ahoraGT   = aHoraGuatemala(new Date());
+  const fechaBaseGT = aHoraGuatemala(new Date(fechaISO));
 
   const inicioMinutos = convertirHoraAMinutos(horaInicioNegocio);
   const finMinutos    = convertirHoraAMinutos(horaFinNegocio);
-  const intervalo     = 30;
 
-  const ahoraGT = aHoraGuatemala(new Date());
+  // ✅ FIX: intervalo = duracion + buffer (no fijo en 30)
+  const intervalo = duracionMinutos + bufferMinutos;
 
   for (let t = inicioMinutos; t + duracionMinutos <= finMinutos; t += intervalo) {
 
-    const slotPropuesto = new Date(fechaBase);
-    slotPropuesto.setHours(Math.floor(t / 60), t % 60, 0, 0);
-
-    // Si es hoy, solo mostrar horas futuras (+15 min de gracia)
-    if (slotPropuesto.toDateString() === ahoraGT.toDateString()) {
-      if (slotPropuesto.getTime() < ahoraGT.getTime() + 15 * 60000) continue;
+    // ✅ FIX: comparar fechas ambas en zona Guatemala
+    const esHoy = fechaBaseGT.toDateString() === ahoraGT.toDateString();
+    if (esHoy) {
+      const slotTotalMin = fechaBaseGT.getFullYear() * 525600 +
+        fechaBaseGT.getMonth() * 43800 +
+        fechaBaseGT.getDate() * 1440 + t;
+      const ahoraTotalMin = ahoraGT.getFullYear() * 525600 +
+        ahoraGT.getMonth() * 43800 +
+        ahoraGT.getDate() * 1440 +
+        ahoraGT.getHours() * 60 + ahoraGT.getMinutes() + 15; // +15 min gracia
+      if (slotTotalMin < ahoraTotalMin) continue;
     }
 
     const finPropuestoMinutos = t + duracionMinutos;
 
-    // ✅ Verificar días/horas bloqueados desde el panel admin
+    // Verificar días/horas bloqueados desde el panel admin
     if (verificarSlotBloqueado(t, finPropuestoMinutos, fechaISO, fechasBloqueadas)) continue;
 
     // Contar citas solapadas usando hora Guatemala

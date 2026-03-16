@@ -70,10 +70,11 @@ export const handleMessage = async (req: Request, res: Response) => {
       // 🌙 AVISO FUERA DE HORARIO (solo texto, una vez por hora)
       // =====================================================================
       const settingsQuery = await pool.query(
-        'SELECT off_hours_message FROM business_settings WHERE business_id = $1',
+        'SELECT off_hours_message, buffer_minutes FROM business_settings WHERE business_id = $1',
         [negocio.id]
       );
       const settings = settingsQuery.rows[0];
+      const bufferMinutos: number = settings?.buffer_minutes ?? 0;
 
       const ahoraGT      = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Guatemala" }));
       const minutosAhora = ahoraGT.getHours() * 60 + ahoraGT.getMinutes();
@@ -155,7 +156,7 @@ export const handleMessage = async (req: Request, res: Response) => {
           [negocio.id, fechaStr]
         )).rows;
 
-        const hors = generarHorariosDisponibles(fechaBase, srv.duration_minutes, negocio.open_time, negocio.close_time, citas, empleados, bloqueados);
+        const hors = generarHorariosDisponibles(fechaBase, srv.duration_minutes, negocio.open_time, negocio.close_time, citas, empleados, bloqueados, bufferMinutos);
         if (hors.length === 0) {
           await enviarMensajeWhatsApp(numeroCliente, "Sin espacios disponibles. Prueba con otra fecha:");
           return;
@@ -299,7 +300,7 @@ export const handleMessage = async (req: Request, res: Response) => {
           [negocio.id, fechaStrRepro]
         )).rows;
 
-        const hors = generarHorariosDisponibles(fechaBase, mem.duracion, negocio.open_time, negocio.close_time, citas, empleados, bloqueadosRepro);
+        const hors = generarHorariosDisponibles(fechaBase, mem.duracion, negocio.open_time, negocio.close_time, citas, empleados, bloqueadosRepro, bufferMinutos);
         if (!hors.length) {
           await enviarMensajeWhatsApp(numeroCliente, "Sin espacios disponibles. Prueba con otra fecha:");
           return;
