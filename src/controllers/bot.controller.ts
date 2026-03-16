@@ -13,6 +13,28 @@ import {
 
 const VERIFY_TOKEN = "Secretaria_Virtual_Token_2026";
 
+// ─── Helper: parsea last_message de forma segura ──────────────────────────────
+async function parseMem(clienteId: string): Promise<any | null> {
+  try {
+    const r = await pool.query('SELECT last_message FROM conversations WHERE client_id = $1', [clienteId]);
+    const raw = r.rows[0]?.last_message;
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// ─── Helper: resetea conversación al menú principal ───────────────────────────
+async function resetearAlMenu(numeroCliente: string, clienteId: string) {
+  await pool.query("UPDATE conversations SET current_step = 'welcome', last_message = null WHERE client_id = $1", [clienteId]);
+  await enviarBotonesWhatsApp(numeroCliente, "Algo salió mal. Volvamos al inicio 😊", [
+    { id: 'opt_agendar', title: '📅 Agendar Cita' },
+    { id: 'opt_gestion', title: '⚙️ Mis Citas' },
+    { id: 'opt_catalogo', title: '📖 Catálogo' }
+  ]);
+}
+
 export const verifyWebhook = (req: Request, res: Response) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -141,7 +163,16 @@ export const handleMessage = async (req: Request, res: Response) => {
       }
 
       else if (pasoActual === 'eligiendo_fecha' && messageInfo.type === 'text') {
-        const mem = JSON.parse((await pool.query('SELECT last_message FROM conversations WHERE client_id = $1', [clienteId])).rows[0].last_message);
+        const mem = await parseMem(clienteId);
+        if (!mem) {
+          await pool.query("UPDATE conversations SET current_step = 'welcome' WHERE client_id = $1", [clienteId]);
+          await enviarBotonesWhatsApp(numeroCliente, "Ocurrió un problema. Volvamos al inicio:", [
+            { id: 'opt_agendar', title: '📅 Agendar Cita' },
+            { id: 'opt_gestion', title: '⚙️ Mis Citas' },
+            { id: 'opt_catalogo', title: '📖 Catálogo' }
+          ]);
+          return;
+        }
         const srv = (await pool.query('SELECT duration_minutes FROM services WHERE id = $1', [mem.servicio_id])).rows[0];
         const fechaBase = procesarFechaHora(entradaUsuario, "00:00");
         const fechaStr  = new Date(fechaBase).toISOString().split('T')[0];
@@ -169,7 +200,8 @@ export const handleMessage = async (req: Request, res: Response) => {
 
       else if (pasoActual === 'eligiendo_hora' && entradaUsuario.startsWith('hr_')) {
         const idx = parseInt(entradaUsuario.replace('hr_', ''));
-        const mem = JSON.parse((await pool.query('SELECT last_message FROM conversations WHERE client_id = $1', [clienteId])).rows[0].last_message);
+        const mem = await parseMem(clienteId);
+        if (!mem) { await resetearAlMenu(numeroCliente, clienteId); return; }
         mem.hora = mem.horarios_disponibles[idx];
         if (!nombreCliente) {
           await pool.query("UPDATE conversations SET current_step = 'pidiendo_nombre', last_message = $1 WHERE client_id = $2", [JSON.stringify(mem), clienteId]);
@@ -187,7 +219,8 @@ export const handleMessage = async (req: Request, res: Response) => {
         const n = messageInfo.text.body.trim();
         await pool.query('UPDATE clients SET name = $1 WHERE id = $2', [n, clienteId]);
         nombreCliente = n;
-        const mem = JSON.parse((await pool.query('SELECT last_message FROM conversations WHERE client_id = $1', [clienteId])).rows[0].last_message);
+        const mem = await parseMem(clienteId);
+        if (!mem) { await resetearAlMenu(numeroCliente, clienteId); return; }
         await pool.query("UPDATE conversations SET current_step = 'confirmando_cita' WHERE client_id = $1", [clienteId]);
         await enviarBotonesWhatsApp(numeroCliente, `📝 *Confirmar cita:*\n\n💅 ${mem.nombre_servicio}\n📅 ${mem.fecha}\n⏰ ${mem.hora}`, [
           { id: 'conf_si', title: '✅ Confirmar' },
@@ -196,7 +229,8 @@ export const handleMessage = async (req: Request, res: Response) => {
       }
 
       else if (pasoActual === 'confirmando_cita' && entradaUsuario === 'conf_si') {
-        const mem = JSON.parse((await pool.query('SELECT last_message FROM conversations WHERE client_id = $1', [clienteId])).rows[0].last_message);
+        const mem = await parseMem(clienteId);
+        if (!mem) { await resetearAlMenu(numeroCliente, clienteId); return; }
         const ini = procesarFechaHora(mem.fecha, mem.hora);
         const dur = (await pool.query('SELECT duration_minutes FROM services WHERE id = $1', [mem.servicio_id])).rows[0].duration_minutes;
         const fin = new Date(new Date(ini).getTime() + dur * 60000).toISOString();
@@ -286,7 +320,8 @@ export const handleMessage = async (req: Request, res: Response) => {
       // 3. FLUJO REPROGRAMAR
       // =====================================================================
       else if (pasoActual === 'eligiendo_fecha_repro' && messageInfo.type === 'text') {
-        const mem = JSON.parse((await pool.query('SELECT last_message FROM conversations WHERE client_id = $1', [clienteId])).rows[0].last_message);
+        const mem = await parseMem(clienteId);
+        if (!mem) { await resetearAlMenu(numeroCliente, clienteId); return; }
         const fechaBase     = procesarFechaHora(entradaUsuario, "00:00");
         const fechaStrRepro = new Date(fechaBase).toISOString().split('T')[0];
 
@@ -313,7 +348,8 @@ export const handleMessage = async (req: Request, res: Response) => {
 
       else if (pasoActual === 'eligiendo_hora_repro' && entradaUsuario.startsWith('hrep_')) {
         const idx = parseInt(entradaUsuario.replace('hrep_', ''));
-        const mem = JSON.parse((await pool.query('SELECT last_message FROM conversations WHERE client_id = $1', [clienteId])).rows[0].last_message);
+        const mem = await parseMem(clienteId);
+        if (!mem) { await resetearAlMenu(numeroCliente, clienteId); return; }
         const nuevaHora = mem.horarios_disponibles[idx];
         const ini = procesarFechaHora(mem.fecha, nuevaHora);
         const fin = new Date(new Date(ini).getTime() + mem.duracion * 60000).toISOString();
@@ -331,6 +367,18 @@ export const handleMessage = async (req: Request, res: Response) => {
         srvs.forEach((s: any) => t += `• ${s.name}: Q${s.price}\n`);
         await pool.query("UPDATE conversations SET current_step = 'welcome' WHERE client_id = $1", [clienteId]);
         await enviarBotonesWhatsApp(numeroCliente, t, [{ id: 'opt_agendar', title: '📅 Agendar' }, { id: 'btn_inicio', title: '⬅️ Menú' }]);
+      }
+
+      // =====================================================================
+      // FALLBACK: mensaje inesperado o texto libre fuera de flujo
+      // =====================================================================
+      else if (messageInfo.type === 'text') {
+        await enviarBotonesWhatsApp(numeroCliente, `No entendí tu mensaje 😊 ¿En qué puedo ayudarte?`, [
+          { id: 'opt_agendar', title: '📅 Agendar Cita' },
+          { id: 'opt_gestion', title: '⚙️ Mis Citas' },
+          { id: 'opt_catalogo', title: '📖 Catálogo' }
+        ]);
+        await pool.query("UPDATE conversations SET current_step = 'esperando_opcion' WHERE client_id = $1", [clienteId]);
       }
 
     } catch (e) { console.error('❌ Error:', e); }
