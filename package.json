@@ -1,31 +1,21 @@
 {
   "name": "secretaria_virtual_mvp",
   "version": "1.0.0",
-  "main": "index.js",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
-    "dev": "nodemon src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc",
-    "start": "node dist/index.js"
+    "dev:api": "npm run dev -w @secretaria/api",
+    "dev:web": "npm run dev -w @secretaria/web -- -p 3001",
+    "build:api": "npm run build -w @secretaria/api",
+    "build:web": "npm run build -w @secretaria/web",
+    "start:api": "npm run start -w @secretaria/api"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
-  "dependencies": {
-    "@supabase/supabase-js": "^2.99.0",
-    "dotenv": "^17.3.1",
-    "express": "^5.2.1",
-    "node-cron": "^4.2.1",
-    "pg": "^8.19.0"
-  },
-  "devDependencies": {
-    "@types/express": "^5.0.6",
-    "@types/node": "^25.3.3",
-    "@types/node-cron": "^3.0.11",
-    "@types/pg": "^8.18.0",
-    "nodemon": "^3.1.14",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
-  }
+  "dependencies": {},
+  "devDependencies": {}
 }
