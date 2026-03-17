@@ -4,7 +4,10 @@ import pool from '../database';
 import { enviarMensajeWhatsApp } from '../services/whatsapp.service';
 
 // El cron revisa cada minuto
+let running = false;
 cron.schedule('* * * * *', async () => {
+  if (running) return;
+  running = true;
   try {
     const ahora = new Date();
 
@@ -101,5 +104,7 @@ cron.schedule('* * * * *', async () => {
 
   } catch (error) {
     console.error('❌ Error en el motor de recordatorios:', error);
+  } finally {
+    running = false;
   }
 });

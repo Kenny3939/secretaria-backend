@@ -11,10 +11,21 @@ import {
   generarHorariosDisponibles 
 } from '../utils/time.utils';
 
-const VERIFY_TOKEN = "Secretaria_Virtual_Token_2026";
+type ConversationMem = {
+  servicio_id?: string;
+  nombre_servicio?: string;
+  fecha?: string;
+  hora?: string;
+  horarios_disponibles?: string[];
+  // reprogramación
+  cita_id?: string;
+  duracion?: number;
+};
+
+const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || '';
 
 // ─── Helper: parsea last_message de forma segura ──────────────────────────────
-async function parseMem(clienteId: string): Promise<any | null> {
+async function parseMem(clienteId: string): Promise<ConversationMem | null> {
   try {
     const r = await pool.query('SELECT last_message FROM conversations WHERE client_id = $1', [clienteId]);
     const raw = r.rows[0]?.last_message;
@@ -39,14 +50,18 @@ export const verifyWebhook = (req: Request, res: Response) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) { res.status(200).send(challenge); }
+  if (!VERIFY_TOKEN) return res.sendStatus(500);
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) { res.status(200).send(String(challenge)); }
   else { res.sendStatus(403); }
 };
 
 export const handleMessage = async (req: Request, res: Response) => {
   const body = req.body;
 
-  if (body.object && body.entry?.[0].changes?.[0].value.messages) {
+  // Siempre responder 200 rápido para evitar reintentos; procesamos asíncrono cuando aplica.
+  if (!body?.object) return res.status(200).send('IGNORED');
+
+  if (body.entry?.[0].changes?.[0].value.messages) {
     const messageInfo = body.entry[0].changes[0].value.messages[0];
     const numeroCliente = messageInfo.from;
     const numeroBot = body.entry[0].changes[0].value.metadata.display_phone_number;
@@ -55,6 +70,8 @@ export const handleMessage = async (req: Request, res: Response) => {
     res.status(200).send('EVENT_RECEIVED');
 
     try {
+      if (!numeroCliente || !numeroBot) return;
+
       const businessQuery = await pool.query('SELECT * FROM businesses WHERE whatsapp_number = $1', [numeroBot]);
       if (businessQuery.rows.length === 0) return;
       const negocio = businessQuery.rows[0];
@@ -158,6 +175,7 @@ export const handleMessage = async (req: Request, res: Response) => {
       else if (pasoActual === 'eligiendo_servicio' && entradaUsuario.startsWith('srv_')) {
         const srvId = entradaUsuario.replace('srv_', '');
         const srv = (await pool.query('SELECT name FROM services WHERE id = $1', [srvId])).rows[0];
+        if (!srv?.name) { await resetearAlMenu(numeroCliente, clienteId); return; }
         await pool.query("UPDATE conversations SET current_step = 'eligiendo_fecha', last_message = $1 WHERE client_id = $2", [JSON.stringify({ servicio_id: srvId, nombre_servicio: srv.name }), clienteId]);
         await enviarMensajeWhatsApp(numeroCliente, `Elegiste *${srv.name}*.\n\n📅 ¿Para qué fecha? (ej: "mañana" o "15/03")`);
       }
@@ -202,7 +220,9 @@ export const handleMessage = async (req: Request, res: Response) => {
         const idx = parseInt(entradaUsuario.replace('hr_', ''));
         const mem = await parseMem(clienteId);
         if (!mem) { await resetearAlMenu(numeroCliente, clienteId); return; }
-        mem.hora = mem.horarios_disponibles[idx];
+        const horaElegida = mem.horarios_disponibles?.[idx];
+        if (!horaElegida) { await resetearAlMenu(numeroCliente, clienteId); return; }
+        mem.hora = horaElegida;
         if (!nombreCliente) {
           await pool.query("UPDATE conversations SET current_step = 'pidiendo_nombre', last_message = $1 WHERE client_id = $2", [JSON.stringify(mem), clienteId]);
           await enviarMensajeWhatsApp(numeroCliente, `¡Listo a las ${mem.hora}! 🎉 ¿Cuál es tu nombre?`);
@@ -231,8 +251,11 @@ export const handleMessage = async (req: Request, res: Response) => {
       else if (pasoActual === 'confirmando_cita' && entradaUsuario === 'conf_si') {
         const mem = await parseMem(clienteId);
         if (!mem) { await resetearAlMenu(numeroCliente, clienteId); return; }
+        if (!mem.fecha || !mem.hora || !mem.servicio_id) { await resetearAlMenu(numeroCliente, clienteId); return; }
         const ini = procesarFechaHora(mem.fecha, mem.hora);
-        const dur = (await pool.query('SELECT duration_minutes FROM services WHERE id = $1', [mem.servicio_id])).rows[0].duration_minutes;
+        const durRow = (await pool.query('SELECT duration_minutes FROM services WHERE id = $1', [mem.servicio_id])).rows[0];
+        const dur = durRow?.duration_minutes;
+        if (!dur || Number.isNaN(Number(dur))) { await resetearAlMenu(numeroCliente, clienteId); return; }
         const fin = new Date(new Date(ini).getTime() + dur * 60000).toISOString();
         await pool.query(
           'INSERT INTO appointments (business_id, client_id, service_id, start_datetime, end_datetime, status) VALUES ($1, $2, $3, $4, $5, $6)',
@@ -322,6 +345,7 @@ export const handleMessage = async (req: Request, res: Response) => {
       else if (pasoActual === 'eligiendo_fecha_repro' && messageInfo.type === 'text') {
         const mem = await parseMem(clienteId);
         if (!mem) { await resetearAlMenu(numeroCliente, clienteId); return; }
+        if (!mem.cita_id || !mem.duracion) { await resetearAlMenu(numeroCliente, clienteId); return; }
         const fechaBase     = procesarFechaHora(entradaUsuario, "00:00");
         const fechaStrRepro = new Date(fechaBase).toISOString().split('T')[0];
 
@@ -350,7 +374,8 @@ export const handleMessage = async (req: Request, res: Response) => {
         const idx = parseInt(entradaUsuario.replace('hrep_', ''));
         const mem = await parseMem(clienteId);
         if (!mem) { await resetearAlMenu(numeroCliente, clienteId); return; }
-        const nuevaHora = mem.horarios_disponibles[idx];
+        const nuevaHora = mem.horarios_disponibles?.[idx];
+        if (!nuevaHora || !mem.fecha || !mem.duracion || !mem.cita_id) { await resetearAlMenu(numeroCliente, clienteId); return; }
         const ini = procesarFechaHora(mem.fecha, nuevaHora);
         const fin = new Date(new Date(ini).getTime() + mem.duracion * 60000).toISOString();
         await pool.query('UPDATE appointments SET start_datetime = $1, end_datetime = $2 WHERE id = $3', [ini, fin, mem.cita_id]);
@@ -383,5 +408,8 @@ export const handleMessage = async (req: Request, res: Response) => {
 
     } catch (e) { console.error('❌ Error:', e); }
 
-  } else { res.sendStatus(404); }
+  } else {
+    // Eventos sin mensajes (statuses, etc.) también deben ser 200
+    res.status(200).send('IGNORED');
+  }
 };

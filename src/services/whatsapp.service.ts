@@ -1,28 +1,51 @@
-// src/services/whatsapp.service.ts
+type WhatsAppSendResult =
+  | { ok: true; status: number }
+  | { ok: false; status?: number; error: unknown };
 
-const token = process.env.WHATSAPP_TOKEN;
-const phoneId = process.env.WHATSAPP_PHONE_ID;
-const url = `https://graph.facebook.com/v18.0/${phoneId}/messages`;
+function getWhatsAppConfig() {
+  const token = process.env.WHATSAPP_TOKEN;
+  const phoneId = process.env.WHATSAPP_PHONE_ID;
+  if (!token || !phoneId) {
+    throw new Error('Faltan WHATSAPP_TOKEN o WHATSAPP_PHONE_ID en variables de entorno.');
+  }
+  const url = `https://graph.facebook.com/v18.0/${phoneId}/messages`;
+  return { token, url };
+}
 
 // 1. FUNCIÓN BASE PARA ENVIAR (Privada para uso interno)
 async function sendToMeta(data: any) {
   try {
+    const { token, url } = getWhatsAppConfig();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12_000);
+
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     
     if (response.ok) {
-      return true;
+      return { ok: true, status: response.status } satisfies WhatsAppSendResult;
     } else {
-      const errorData = await response.json();
-      console.error('❌ Meta rechazó el mensaje:', JSON.stringify(errorData, null, 2));
-      return false;
+      const raw = await response.text().catch(() => '');
+      let errorData: unknown = raw;
+      try {
+        errorData = raw ? JSON.parse(raw) : raw;
+      } catch {
+        // mantener raw
+      }
+      console.error('❌ Meta rechazó el mensaje:', {
+        status: response.status,
+        error: errorData,
+      });
+      return { ok: false, status: response.status, error: errorData } satisfies WhatsAppSendResult;
     }
   } catch (error) {
     console.error('❌ Error de conexión con Meta:', error);
-    return false;
+    return { ok: false, error } satisfies WhatsAppSendResult;
   }
 }
 

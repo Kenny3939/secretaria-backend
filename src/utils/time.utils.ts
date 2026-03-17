@@ -70,7 +70,8 @@ export function verificarSlotBloqueado(
   fechaISO: string,
   fechasBloqueadas: any[]
 ): boolean {
-  const fechaStr = new Date(fechaISO).toISOString().split("T")[0];
+  // Usar Guatemala para evitar “corrimientos” de fecha por zona horaria
+  const fechaStr = aHoraGuatemala(new Date(fechaISO)).toISOString().split("T")[0];
 
   for (const bloqueo of fechasBloqueadas) {
     if (fechaStr < bloqueo.start_date || fechaStr > bloqueo.end_date) continue;
@@ -118,17 +119,13 @@ export function generarHorariosDisponibles(
 
   for (let t = inicioMinutos; t + duracionMinutos <= finMinutos; t += intervalo) {
 
-    // ✅ FIX: comparar fechas ambas en zona Guatemala
+    // Comparación real con Date en hora Guatemala (evita fórmulas aproximadas por mes/año)
     const esHoy = fechaBaseGT.toDateString() === ahoraGT.toDateString();
     if (esHoy) {
-      const slotTotalMin = fechaBaseGT.getFullYear() * 525600 +
-        fechaBaseGT.getMonth() * 43800 +
-        fechaBaseGT.getDate() * 1440 + t;
-      const ahoraTotalMin = ahoraGT.getFullYear() * 525600 +
-        ahoraGT.getMonth() * 43800 +
-        ahoraGT.getDate() * 1440 +
-        ahoraGT.getHours() * 60 + ahoraGT.getMinutes() + 15; // +15 min gracia
-      if (slotTotalMin < ahoraTotalMin) continue;
+      const slot = new Date(fechaBaseGT);
+      slot.setHours(Math.floor(t / 60), t % 60, 0, 0);
+      const ahoraConGracia = new Date(ahoraGT.getTime() + 15 * 60 * 1000);
+      if (slot.getTime() < ahoraConGracia.getTime()) continue;
     }
 
     const finPropuestoMinutos = t + duracionMinutos;
